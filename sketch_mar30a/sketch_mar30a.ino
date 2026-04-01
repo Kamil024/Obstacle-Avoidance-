@@ -6,6 +6,9 @@ const char* apSsid     = "Selecta Ice Cream";
 const char* apPassword = "noconnect024";
 const int MAX_CLIENTS  = 1;
 
+// Built-in LED for connection status
+#define LED_PIN 2
+
 // ========== Web server ==========
 WebServer server(80);
 
@@ -20,6 +23,8 @@ WebServer server(80);
 // PWM settings
 const int PWM_FREQ = 20000;
 const int PWM_RES  = 8;
+const int ENA_CH   = 0; // Fallback channel for Core v2.x
+const int ENB_CH   = 1; // Fallback channel for Core v2.x
 
 // Speed values
 uint8_t manualSpeed = 230;    
@@ -39,6 +44,10 @@ bool turnLeftNext = true;
 const unsigned long BACK_TIME = 600;
 const unsigned long TURN_TIME = 700;
 const float OBSTACLE_DIST_CM = 20.0;
+
+// Variables for non-blocking double blink loop
+unsigned long previousBlinkTime = 0;
+int blinkState = 0;
 
 // ========== NEW XBOX PRO HTML PROGRAM ==========
 const char index_html[] PROGMEM = R"=====(
@@ -307,8 +316,13 @@ const char index_html[] PROGMEM = R"=====(
 
 // ========== Motor Functions ==========
 void setMotorSpeed(uint8_t left, uint8_t right) {
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
   ledcWrite(ENA_PIN, left);
   ledcWrite(ENB_PIN, right);
+#else
+  ledcWrite(ENA_CH, left);
+  ledcWrite(ENB_CH, right);
+#endif
 }
 
 void driveStop() {
@@ -378,6 +392,30 @@ void handleAutoObstacle() {
   }
 }
 
+// double blink comment
+void handleDoubleBlink() {
+  if (WiFi.softAPgetStationNum() > 0) {
+    unsigned long currentMillis = millis();
+    
+    if (blinkState == 0) {
+      digitalWrite(LED_PIN, HIGH);
+      if (currentMillis - previousBlinkTime >= 150) { blinkState = 1; previousBlinkTime = currentMillis; }
+    } else if (blinkState == 1) {
+      digitalWrite(LED_PIN, LOW);
+      if (currentMillis - previousBlinkTime >= 150) { blinkState = 2; previousBlinkTime = currentMillis; }
+    } else if (blinkState == 2) {
+      digitalWrite(LED_PIN, HIGH);
+      if (currentMillis - previousBlinkTime >= 150) { blinkState = 3; previousBlinkTime = currentMillis; }
+    } else if (blinkState == 3) {
+      digitalWrite(LED_PIN, LOW);
+      if (currentMillis - previousBlinkTime >= 1000) { blinkState = 0; previousBlinkTime = currentMillis; }
+    }
+  } else {
+    digitalWrite(LED_PIN, LOW);
+    blinkState = 0;
+  }
+}
+
 void handleRoot() { server.send_P(200, "text/html", index_html); }
 void handleCmd() {
   String dir = server.arg("dir");
@@ -402,11 +440,26 @@ void handleMode() {
 
 void setup() {
   Serial.begin(115200);
+  
+  pinMode(LED_PIN, OUTPUT);
+  
   pinMode(IN1, OUTPUT); pinMode(IN2, OUTPUT); pinMode(IN3, OUTPUT); pinMode(IN4, OUTPUT);
+  
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
   ledcAttach(ENA_PIN, PWM_FREQ, PWM_RES);
   ledcAttach(ENB_PIN, PWM_FREQ, PWM_RES);
+#else
+  ledcSetup(ENA_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(ENA_PIN, ENA_CH);
+  ledcSetup(ENB_CH, PWM_FREQ, PWM_RES);
+  ledcAttachPin(ENB_PIN, ENB_CH);
+#endif
+
   pinMode(TRIG_PIN, OUTPUT); pinMode(ECHO_PIN, INPUT);
-  WiFi.softAP(apSsid, apPassword);
+  
+  // Apply MAX_CLIENTS restriction
+  WiFi.softAP(apSsid, apPassword, 1, 0, MAX_CLIENTS);
+  
   server.on("/", handleRoot);
   server.on("/cmd", handleCmd);
   server.on("/mode", handleMode);
@@ -415,7 +468,11 @@ void setup() {
 
 void loop() {
   server.handleClient();
+  
+  handleDoubleBlink(); 
+
   if (obstacleMode) handleAutoObstacle();
   else handleManualMovement();
+  
   delay(5);
 }
